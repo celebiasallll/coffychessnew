@@ -91,7 +91,7 @@
             coffytokenAbi,
             moduleAddress,
             moduleAbi
-        } from './coffytokenvemodülabi.js?v=4';
+        } from './coffytokenvemodülabi.js?v=5';
 
         window.coffytokenAddress = coffytokenAddress;
         window.coffytokenAbi = coffytokenAbi;
@@ -853,10 +853,10 @@
                 flex-shrink: 0;
             }
 
-            /* HIDE Top Panel Clutter (Status/Info boxes) - We moved this info to bottom bar */
+            /* HIDE Top Panel Clutter (Status/Info boxes) - Except the info text */
             .left-panel h3,
             .left-panel .form-group,
-            .left-panel>div:not(.btn) {
+            .left-panel>div:not(.btn):not(:has(#game-info-text)) {
                 display: none !important;
             }
 
@@ -983,7 +983,7 @@
                 <div class="logo">COFFEE CHESS</div>
                 <div class="tagline">SECURE BLOCKCHAIN GAMING</div>
             </div>
-            <div>
+            <div style="display: none;">
                 <button id="wallet-btn" class="btn btn-primary">
                     Connect Wallet
                 </button>
@@ -1063,7 +1063,7 @@
             <div class="glass-panel right-panel">
                 <!-- Mobile Only: Minimal Game Status Info -->
                 <div class="mobile-info-bar"
-                    style="display: none; flex-direction: column; gap: 8px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 0.85rem;">
+                    style="display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); font-size: 0.85rem;">
 
                     <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
                         <div>
@@ -1079,7 +1079,7 @@
                     <!-- Extra Desktop Info: Game ID / Stake -->
                     <div
                         style="display: flex; justify-content: space-between; align-items: center; width: 100%; font-size: 0.8rem; color: var(--text-muted);">
-                        <span id="mobile-game-id">Game: <span class="text-gold">--</span></span>
+                        <span id="mobile-game-id">ID: <span class="text-gold">--</span></span>
                         <span id="mobile-stake-info">Stake: <span class="text-gold">--</span></span>
                     </div>
                 </div>
@@ -1141,21 +1141,22 @@
                 <input type="number" id="stake-input" placeholder="10" step="0.01" min="0">
             </div>
 
+
             <div class="form-group">
-                <label>Time Control</label>
+                <label>Time Control (Minutes)</label>
                 <div style="display: flex; gap: 10px;">
                     <button class="btn btn-secondary time-btn active" onclick="selectTime(this, 5)"
-                        style="flex: 1; border-color: var(--primary-gold); background: rgba(212, 175, 55, 0.1);">5
-                        min</button>
-                    <button class="btn btn-secondary time-btn" onclick="selectTime(this, 10)" style="flex: 1;">10
-                        min</button>
-                    <button class="btn btn-secondary time-btn" onclick="selectTime(this, 30)" style="flex: 1;">30
-                        min</button>
+                        style="flex: 1; border-color: var(--primary-gold); background: rgba(212, 175, 55, 0.1);">5</button>
+                    <button class="btn btn-secondary time-btn" onclick="selectTime(this, 10)"
+                        style="flex: 1;">10</button>
+                    <button class="btn btn-secondary time-btn" onclick="selectTime(this, 30)"
+                        style="flex: 1;">30</button>
                 </div>
                 <input type="hidden" id="time-input" value="5">
             </div>
+
             <div style="display: flex; gap: 10px;">
-                <button class="btn btn-primary" style="flex: 1;" onclick="startPvpGameFlow()">Create</button>
+                <button class="btn btn-primary" style="flex: 1;" onclick="createGameFlow()">Create Game</button>
                 <button class="btn btn-secondary" style="flex: 1;" onclick="closeModal('create-modal')">Cancel</button>
             </div>
         </div>
@@ -1169,7 +1170,7 @@
                 <input type="text" id="join-game-id" placeholder="Enter ID (e.g., 82 or ABC123)">
             </div>
             <div style="display: flex; gap: 10px;">
-                <button class="btn btn-primary" style="flex: 1;" onclick="joinPvpGameFlow()">Join</button>
+                <button class="btn btn-primary" style="flex: 1;" onclick="joinGameFlow()">Join</button>
                 <button class="btn btn-secondary" style="flex: 1;" onclick="closeModal('join-modal')">Cancel</button>
             </div>
         </div>
@@ -1280,7 +1281,7 @@
     </div>
 
     <script type="module">
-        import { coffytokenAddress, coffytokenAbi, moduleAddress, moduleAbi } from './coffytokenvemodülabi.js';
+        import { coffytokenAddress, coffytokenAbi, moduleAddress, moduleAbi } from './coffytokenvemodülabi.js?v=5';
 
         // Expose to window for debugging/legacy access if needed
         window.coffytokenAddress = coffytokenAddress;
@@ -1578,10 +1579,38 @@
             initSocket();
             updateUI();
 
+            // Wallet check
+            checkExistingConnection();
+
             // Attach wallet button handler
             $('#wallet-btn').on('click', function () {
                 console.log('Connect Wallet button clicked');
                 connectWallet();
+            });
+
+            // Chat input handlers
+            $('#chat-input').on('keydown', function (e) {
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    sendChatMessage();
+                }
+            });
+
+            // Quick emoji support
+            $('#chat-input').on('input', function () {
+                const text = $(this).val();
+                const converted = text
+                    .replace(/:\)/g, '😊')
+                    .replace(/:\(/g, '😞')
+                    .replace(/:D/g, '😄')
+                    .replace(/:P/g, '😛')
+                    .replace(/<3/g, '❤️')
+                    .replace(/:fire:/g, '🔥')
+                    .replace(/:check:/g, '✓')
+                    .replace(/:cross:/g, '✕');
+                if (converted !== text) {
+                    $(this).val(converted);
+                }
             });
         });
 
@@ -1608,182 +1637,197 @@
 
         // ============ WALLET CONNECTION ============
         async function checkExistingConnection() {
-            // Only check if we have a saved preference to avoid spamming
-            const savedAddress = localStorage.getItem('userAddress');
-            if (savedAddress && typeof window.ethereum !== 'undefined') {
+            if (typeof window.ethereum !== 'undefined') {
                 try {
+                    // Strictly silent on load - don't trigger any popups
                     const accounts = await window.ethereum.request({ method: 'eth_accounts' });
-                    if (accounts.length > 0 && accounts[0].toLowerCase() === savedAddress.toLowerCase()) {
-                        // Silent reconnect
-                        userAddress = accounts[0];
-                        signer = provider.getSigner();
-
-                        // Update UI without full connect flow (avoids popup)
-                        connectWallet(true);
+                    if (accounts.length > 0) {
+                        await connectWallet(true, accounts);
                     }
                 } catch (error) {
-                    console.log('Silent reconnect failed:', error);
+                    console.log('Silent auto-connect check failed:', error);
                 }
             }
         }
 
+
         // Loading states
         let isConnecting = false;
-
         let isSwitchingNetwork = false;
+        let connectionPromise = null;
 
-        async function connectWallet(silent = false) {
-            if (isConnecting) return;
+        async function connectWallet(silent = false, preFetchedAccounts = null) {
+            if (connectionPromise) return connectionPromise;
 
-            if (typeof window.ethereum === 'undefined') {
-                if (!silent) showToast('Please install MetaMask or another Web3 wallet!', 'error');
-                return;
-            }
+            connectionPromise = (async () => {
+                if (isConnecting) return;
 
-            isConnecting = true;
-            if (!silent) {
-                $('#wallet-btn').prop('disabled', true).html('<span class="loader-inline"></span> Connecting...');
-            }
-
-            try {
-                // 1. Check if already authorized
-                let accounts = await window.ethereum.request({ method: 'eth_accounts' });
-
-                // 2. If no accounts, request access (triggers popup)
-                if (accounts.length === 0 && !silent) {
-                    accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-                } else if (accounts.length === 0 && silent) {
-                    return; // Silent fail
-                }
-
-                if (!accounts || accounts.length === 0) return;
-                userAddress = accounts[0];
-
-                // 3. Check and switch to Base Network if needed
-                const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
-                const baseChainId = '0x2105'; // 8453
-
-                if (currentChainId !== baseChainId) {
-                    showToast('Switching to Base Network...', 'info');
-                    isSwitchingNetwork = true;
-                    try {
-                        await window.ethereum.request({
-                            method: 'wallet_switchEthereumChain',
-                            params: [{ chainId: baseChainId }]
-                        });
-                    } catch (switchError) {
-                        if (switchError.code === 4902 || switchError.code === -32603) {
-                            try {
-                                await window.ethereum.request({
-                                    method: 'wallet_addEthereumChain',
-                                    params: [{
-                                        chainId: baseChainId,
-                                        chainName: 'Base',
-                                        nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-                                        rpcUrls: ['https://mainnet.base.org'],
-                                        blockExplorerUrls: ['https://basescan.org/']
-                                    }]
-                                });
-                            } catch (addError) {
-                                showToast('Please add Base Network manually', 'error');
-                                isSwitchingNetwork = false;
-                                return;
-                            }
-                        } else if (switchError.code === 4001) {
-                            showToast('Network switch rejected. Base Network is required.', 'error');
-                            isSwitchingNetwork = false;
-                            return;
-                        } else {
-                            showToast('Please switch to Base Network manually', 'error');
-                            isSwitchingNetwork = false;
-                            return;
-                        }
-                    }
-                    await new Promise(r => setTimeout(r, 1000));
-                    isSwitchingNetwork = false;
-                }
-
-                // 4. Re-create provider AFTER network switch
-                provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
-                signer = provider.getSigner();
-                userAddress = await signer.getAddress();
-
-                // 5. Verify we're on Base
-                const network = await provider.getNetwork();
-                if (network.chainId !== 8453) {
-                    showToast('Please switch to Base Network to continue', 'error');
+                if (typeof window.ethereum === 'undefined') {
+                    if (!silent) showToast('Please install MetaMask or another Web3 wallet!', 'error');
                     return;
                 }
 
-                // 6. Initialize contracts
-                coffyToken = new ethers.Contract(coffytokenAddress, coffytokenAbi, signer);
-                moduleContract = new ethers.Contract(moduleAddress, moduleAbi, signer);
-
-                // 7. Get balance with retry
-                let balance;
-                let retries = 3;
-                while (retries > 0) {
-                    try {
-                        balance = await coffyToken.balanceOf(userAddress);
-                        break;
-                    } catch (e) {
-                        retries--;
-                        if (retries === 0) { balance = ethers.BigNumber.from(0); break; }
-                        await new Promise(r => setTimeout(r, 1000));
-                    }
+                isConnecting = true;
+                if (!silent) {
+                    $('#wallet-btn').prop('disabled', true).html('<span class="loader-inline"></span> Connecting...');
                 }
 
-                const formatted = ethers.utils.formatUnits(balance, 18);
-                const shortAddress = `${userAddress.slice(0, 6)}...${userAddress.slice(-4)}`;
-                window.userBalance = formatted;
-                window.userAddress = userAddress;
-                localStorage.setItem('userAddress', userAddress);
+                try {
+                    // 1. Check if already authorized
+                    let accounts = preFetchedAccounts || await window.ethereum.request({ method: 'eth_accounts' });
 
-                $('#wallet-btn').html(`
+                    // 2. If no accounts, request access (triggers popup)
+                    if (accounts.length === 0 && !silent) {
+                        try {
+                            accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                        } catch (e) {
+                            console.warn('User rejected or multiple popups blocked:', e);
+                            return;
+                        }
+                    } else if (accounts.length === 0 && silent) {
+                        return; // Silent fail
+                    }
+
+                    if (!accounts || accounts.length === 0) return;
+                    userAddress = accounts[0];
+
+                    // 3. Check and switch to Base Network if needed
+                    const currentChainId = await window.ethereum.request({ method: 'eth_chainId' });
+                    const baseChainId = '0x2105'; // 8453
+
+                    if (currentChainId !== baseChainId) {
+                        if (silent) {
+                            console.log(' Wrong network but silent mode - skipping switch');
+                            return;
+                        }
+                        showToast('Switching to Base Network...', 'info');
+                        isSwitchingNetwork = true;
+                        try {
+                            await window.ethereum.request({
+                                method: 'wallet_switchEthereumChain',
+                                params: [{ chainId: baseChainId }]
+                            });
+                        } catch (switchError) {
+                            if (switchError.code === 4902 || switchError.code === -32603) {
+                                try {
+                                    await window.ethereum.request({
+                                        method: 'wallet_addEthereumChain',
+                                        params: [{
+                                            chainId: baseChainId,
+                                            chainName: 'Base',
+                                            nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
+                                            rpcUrls: ['https://mainnet.base.org'],
+                                            blockExplorerUrls: ['https://basescan.org/']
+                                        }]
+                                    });
+                                } catch (addError) {
+                                    showToast('Please add Base Network manually', 'error');
+                                    isSwitchingNetwork = false;
+                                    return;
+                                }
+                            } else if (switchError.code === 4001) {
+                                showToast('Network switch rejected. Base Network is required.', 'error');
+                                isSwitchingNetwork = false;
+                                return;
+                            } else {
+                                showToast('Please switch to Base Network manually', 'error');
+                                isSwitchingNetwork = false;
+                                return;
+                            }
+                        }
+                        await new Promise(r => setTimeout(r, 1000));
+                        isSwitchingNetwork = false;
+                    }
+
+                    // 4. Re-create provider AFTER network switch
+                    // Small delay to let MetaMask state settle
+                    await new Promise(r => setTimeout(r, 300));
+                    provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
+                    signer = provider.getSigner();
+                    try {
+                        userAddress = await signer.getAddress();
+                    } catch (e) {
+                        console.warn('Failed to get address from signer, retrying...');
+                        accounts = await window.ethereum.request({ method: 'eth_accounts' });
+                        userAddress = accounts[0];
+                    }
+
+                    // 5. Verify we're on Base
+                    const network = await provider.getNetwork();
+                    if (network.chainId !== 8453) {
+                        showToast('Please switch to Base Network to continue', 'error');
+                        return;
+                    }
+
+                    // 6. Initialize contracts
+                    coffyToken = new ethers.Contract(coffytokenAddress, coffytokenAbi, signer);
+                    moduleContract = new ethers.Contract(moduleAddress, moduleAbi, signer);
+
+                    // 7. Get balance with retry
+                    let balance;
+                    let retries = 3;
+                    while (retries > 0) {
+                        try {
+                            balance = await coffyToken.balanceOf(userAddress);
+                            break;
+                        } catch (e) {
+                            retries--;
+                            if (retries === 0) { balance = ethers.BigNumber.from(0); break; }
+                            await new Promise(r => setTimeout(r, 1000));
+                        }
+                    }
+
+                    const formatted = ethers.utils.formatUnits(balance, 18);
+                    const shortAddress = `${userAddress.slice(0, 6)}...${userAddress.slice(-4)}`;
+                    window.userBalance = formatted;
+                    window.userAddress = userAddress;
+                    localStorage.setItem('userAddress', userAddress);
+
+                    $('#wallet-btn').html(`
                     <div style="display: flex; align-items: center; gap: 8px;">
                         <span id="wallet-balance" style="font-size: 0.8rem; font-weight: 600;">💰 ${parseFloat(formatted).toFixed(2)} COFFY</span>
                         <span style="font-size: 0.7rem; opacity: 0.7;">|</span>
                         <span style="font-size: 0.7rem;">${shortAddress}</span>
                     </div>
                 `);
-                $('#wallet-btn').prop('disabled', false);
+                    $('#wallet-btn').prop('disabled', false);
 
-                if (typeof setupBalanceListener === 'function') setupBalanceListener();
-                if (typeof updateWalletBalance === 'function') updateWalletBalance();
+                    if (typeof setupBalanceListener === 'function') setupBalanceListener();
+                    if (typeof updateWalletBalance === 'function') updateWalletBalance();
 
-                showToast('Wallet connected successfully!', 'success');
-                document.addEventListener('click', initAudio, { once: true });
-                setTimeout(() => tryReconnect(), 500);
+                    // showToast('Wallet connected successfully!', 'success'); // SILENCED AS REQUESTED
+                    document.addEventListener('click', initAudio, { once: true });
+                    // tryReconnect is handled by socket connect listener if needed
 
-                // Listen for account/chain changes
-                window.ethereum.removeAllListeners('accountsChanged');
-                window.ethereum.removeAllListeners('chainChanged');
-                window.ethereum.on('accountsChanged', (newAccounts) => {
-                    // If accounts change, re-run the connection logic to update UI/signer
-                    if (newAccounts.length > 0 && newAccounts[0].toLowerCase() !== userAddress.toLowerCase()) {
-                        connectWallet(true); // Silent reconnect
-                    } else if (newAccounts.length === 0) {
-                        // Wallet disconnected
-                        userAddress = null;
-                        $('#wallet-btn').prop('disabled', false).text('Connect Wallet');
-                        showToast('Wallet disconnected.', 'info');
-                        window.location.reload(); // Or handle state reset more gracefully
+                    // Listen for account/chain changes
+                    if (window.ethereum.on) {
+                        window.ethereum.on('accountsChanged', (newAccounts) => {
+                            if (newAccounts.length === 0 || (userAddress && newAccounts[0].toLowerCase() !== userAddress.toLowerCase())) {
+                                window.location.reload();
+                            }
+                        });
+                        window.ethereum.on('chainChanged', () => {
+                            if (!isSwitchingNetwork) window.location.reload();
+                        });
                     }
-                });
-                window.ethereum.on('chainChanged', () => {
-                    if (!isSwitchingNetwork) window.location.reload();
-                });
 
-            } catch (error) {
-                console.error('Wallet connection error:', error);
-                const errorMsg = error.code === 4001 ? 'Connection rejected by user'
-                    : (error.message ? error.message.substring(0, 100) : 'Connection failed');
-                if (!silent) showToast(errorMsg, 'error');
-            } finally {
-                isConnecting = false;
-                if (!silent && !userAddress) {
-                    $('#wallet-btn').prop('disabled', false).text('Connect Wallet');
+                } catch (error) {
+                    console.error('Wallet connection error:', error);
+                    const errorMsg = error.code === 4001 ? 'Connection rejected by user'
+                        : (error.message ? error.message.substring(0, 100) : 'Connection failed');
+                    if (!silent) showToast(errorMsg, 'error');
+                } finally {
+                    isConnecting = false;
+                    if (!silent && !userAddress) {
+                        $('#wallet-btn').prop('disabled', false).text('Connect Wallet');
+                    }
                 }
+            })();
+
+            try {
+                return await connectionPromise;
+            } finally {
+                connectionPromise = null;
             }
         }
 
@@ -1804,7 +1848,7 @@
                 console.log(`Checking state for game ${gameId}...`);
 
                 // 1. Check Blockchain Status
-                const game = await moduleContract.games(gameId);
+                const game = await moduleContract.getGameInfo(gameId);
                 const status = typeof game.status === 'object' ? game.status.toNumber() : Number(game.status);
 
                 if (status === 2 || status === 1) {
@@ -1823,7 +1867,7 @@
         async function checkAndClaimWin(gameId, _retryCount = 0) {
             const MAX_RETRIES = 20; // 20 × 3s = 60 seconds max
             try {
-                const game = await moduleContract.games(gameId);
+                const game = await moduleContract.getGameInfo(gameId);
                 // game.status may be BigNumber (ethers v5) — always compare with toNumber()
                 const statusNum = typeof game.status === 'object' ? game.status.toNumber() : game.status;
                 const winnerAddr = game.winner;
@@ -1955,109 +1999,190 @@
         async function tryReconnect() {
             if (!userAddress || reconnecting) return;
 
+            // Only reconnect if we are on the same server as the last session
+            const lastUrl = localStorage.getItem('lastCoffeeServerUrl');
+            const currentUrl = socketUrls[currentSocketUrlIndex];
+            if (lastUrl && lastUrl !== currentUrl) {
+                console.log('🔌 New server detected, skipping reconnection.');
+                return;
+            }
+
+            // Session token: stored on createRoom/joinRoom, no MetaMask popup needed
+            const sessionToken = localStorage.getItem('coffeeSessionToken');
+
             reconnecting = true;
 
-            try {
-                // Sign message for secure reconnection
-                const signature = await signer.signMessage("Reconnecting to CoffeeChess");
-
-                socket.emit('reconnect', {
-                    walletAddress: userAddress,
-                    signature: signature
-                }, (response) => {
-                    reconnecting = false;
-
-                    if (response.success) {
-                        roomId = response.roomId;
-                        playerNumber = response.playerNumber;
-                        myColor = response.color;
-                        currentGameId = response.gameId;
-                        isMultiplayer = true;
-                        gameStarted = true;
-
-                        // Restore game state
-                        if (response.pgn) {
-                            chess.load_pgn(response.pgn);
-                        } else if (response.fen) {
-                            chess.load(response.fen);
-                        }
-                        board.position(chess.fen());
-                        timerWhite = response.timers.white;
-                        timerBlack = response.timers.black;
-
-                        setupBoardUI(myColor);
-                        updateUI();
-
-                        if (!response.gameOver) {
-                            $('#resign-btn').prop('disabled', false);
-                            // Enable chat
-                            $('#chat-input').prop('disabled', false);
-                            $('#chat-send-btn').prop('disabled', false);
-                        }
-
-                        // Load chat history
-                        if (response.chatHistory && response.chatHistory.length > 0) {
-                            response.chatHistory.forEach(msg => displayChatMessage(msg));
-                        }
-
-                        if (response.gameOver) {
-                            console.log('Reconnected to finished game. Winner:', response.winner);
-                            // If game is over, ensure we try to commit/reveal if we haven't
-                            // We need to know who won to determine score
-                            const winnerName = response.winner; // "white" or "black" or "draw"
-
-                            window._lastGameWinnerColor = winnerName;
-                            window._lastGameSignatureWhite = response.signatureWhite;
-                            window._lastGameSignatureBlack = response.signatureBlack;
-
-                            // Check if we need to resume commit flow
-                            setTimeout(() => checkAndResumeState(currentGameId, winnerName), 1000);
-                        }
-
-                        showToast('Reconnected to game!', 'success');
-                        $('#game-info-text').html(`Reconnected to Game <span class="text-gold">${currentGameId}</span>`);
-                    } else {
-                    }
-                });
-            } catch (error) {
-                console.error("Reconnect error:", error);
+            socket.emit('reconnect', {
+                walletAddress: userAddress,
+                sessionToken: sessionToken
+            }, (response) => {
                 reconnecting = false;
+
+                if (response && response.success) {
+                    localStorage.setItem('lastCoffeeServerUrl', currentUrl);
+                    roomId = response.roomId;
+                    playerNumber = response.playerNumber;
+                    myColor = response.color;
+                    currentGameId = response.gameId;
+                    isMultiplayer = true;
+                    gameStarted = true;
+
+                    if (response.pgn) {
+                        chess.load_pgn(response.pgn);
+                    } else if (response.fen) {
+                        chess.load(response.fen);
+                    }
+                    board.position(chess.fen());
+                    timerWhite = response.timers.white;
+                    timerBlack = response.timers.black;
+
+                    setupBoardUI(myColor);
+                    updateUI();
+
+                    if (!response.gameOver) {
+                        $('#resign-btn').prop('disabled', false);
+                        $('#chat-input').prop('disabled', false);
+                        $('#chat-send-btn').prop('disabled', false);
+                    }
+
+                    if (response.chatHistory && response.chatHistory.length > 0) {
+                        response.chatHistory.forEach(msg => displayChatMessage(msg));
+                    }
+
+                    if (response.gameOver) {
+                        console.log('Reconnected to finished game. Winner:', response.winner);
+                        window._lastGameWinnerColor = response.winner;
+                        window._lastGameSignatureWhite = response.signatureWhite;
+                        window._lastGameSignatureBlack = response.signatureBlack;
+                        setTimeout(() => checkAndResumeState(currentGameId, response.winner), 1000);
+                    }
+
+                    showToast('Reconnected to game!', 'success');
+                    $('#game-info-text').html(`Reconnected to Game <span class="text-gold">${currentGameId}</span>`);
+                } else {
+                    console.log('Reconnection rejected:', response?.error);
+                    if (response?.error?.includes('not found')) {
+                        localStorage.removeItem('lastCoffeeRoomId');
+                        localStorage.removeItem('coffeeSessionToken');
+                    }
+                }
+            });
+        }
+
+        async function ensureAllowanceWithPermit(targetModuleAddress, amountWei) {
+            // Permit ile yetki veriliyor — ayrıca approve/allowance kontrolü gerekmez
+            console.log("🔑 Requesting Permit for:", targetModuleAddress);
+            updateLoadingMessage('Please sign the authorization in MetaMask (Signature Only)...');
+
+            try {
+                const nonce = await coffyToken.nonces(userAddress);
+                const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour
+                const name = "Coffy Coin"; // Matching contract constructor
+                const chainId = (await provider.getNetwork()).chainId;
+
+                const domain = {
+                    name: name,
+                    version: "1",
+                    chainId: chainId,
+                    verifyingContract: coffytokenAddress
+                };
+
+                const types = {
+                    Permit: [
+                        { name: "owner", type: "address" },
+                        { name: "spender", type: "address" },
+                        { name: "value", type: "uint256" },
+                        { name: "nonce", type: "uint256" },
+                        { name: "deadline", type: "uint256" }
+                    ]
+                };
+
+                const value = amountWei.toString();
+                const message = {
+                    owner: userAddress,
+                    spender: targetModuleAddress,
+                    value: value,
+                    nonce: nonce.toString(),
+                    deadline: deadline
+                };
+
+                const signature = await signer._signTypedData(domain, types, message);
+                const sig = ethers.utils.splitSignature(signature);
+
+                updateLoadingMessage('Broadcasting permission to blockchain...');
+                const tx = await coffyToken.permit(
+                    userAddress,
+                    targetModuleAddress,
+                    value,
+                    deadline,
+                    sig.v,
+                    sig.r,
+                    sig.s
+                );
+                await tx.wait();
+                console.log("✅ Permit confirmed on-chain.");
+                return true;
+            } catch (err) {
+                console.error("❌ Permit failed:", err);
+                if (err.code === 4001) {
+                    showToast('Authorization rejected by user', 'error');
+                } else {
+                    showToast('Authorization failed. Please try again.', 'error');
+                }
+                return false;
             }
         }
 
         // ============ BLOCKCHAIN FUNCTIONS ============
         async function ensureReady() {
-            if (!moduleContract) {
-                await connectWallet();
-                if (!moduleContract) {
-                    showToast('Please connect wallet first', 'error');
-                    return false;
+            console.log('🛡️ ensureReady checking connection...');
+
+            // 1. Check if contracts are initialized
+            if (!moduleContract || !signer || !userAddress) {
+                console.log('🛡️ Contracts or signer not ready, trying connection sequence...');
+
+                // Allow up to 3 seconds for existing connection promise or quiet background load
+                for (let i = 0; i < 6; i++) {
+                    if (moduleContract && signer && userAddress) break;
+                    await new Promise(r => setTimeout(r, 500));
+                }
+
+                if (!moduleContract || !signer || !userAddress) {
+                    console.log('🛡️ Still not ready, trying silent connection...');
+                    const success = await connectWallet(true);
+                    if (!success || !moduleContract) {
+                        console.log('🛡️ Background connection not available.');
+                        showToast('Please connect your wallet to continue.', 'warning');
+                        return false; // Stop here, don't trigger interactive popup automatically
+                    }
                 }
             }
 
-            // Check network - must be on Base
-            const net = await provider.getNetwork();
-            if (net.chainId !== 8453) {
-                showToast('Switching to Base Network...', 'info');
-                try {
-                    await window.ethereum.request({
-                        method: 'wallet_switchEthereumChain',
-                        params: [{ chainId: '0x2105' }]
-                    });
-                    // Re-create provider after switch
-                    provider = new ethers.providers.Web3Provider(window.ethereum, 'any');
-                    signer = provider.getSigner();
-                } catch (e) {
-                    showToast('Please switch to Base Network', 'error');
-                    return false;
+            // 2. Check and enforce network (Base)
+            try {
+                const network = await provider.getNetwork();
+                if (network.chainId !== 8453) {
+                    console.log(`🛡️ Wrong network detected: ${network.chainId}. Forcing interactive connectWallet...`);
+                    const success = await connectWallet(false); // This will trigger the network switch prompt
+                    if (!success) return false;
                 }
+            } catch (err) {
+                console.error('🛡️ Network check failed:', err);
+                return false;
             }
+
+            console.log('🛡️ ensureReady checks passed. Ready for blockchain interaction.');
             return true;
         }
 
-        async function startPvpGameFlow() {
-            // DEV_MODE: Skip blockchain entirely, just create room
+        async function createGameFlow() {
+            console.log('🎮 createGameFlow triggered (Direct Window Access)');
+            // Attach immediately just in case
+            window.createGameFlow = createGameFlow;
+
+            // DEV_MODE check...
             if (DEV_MODE) {
+                console.log('🛠️ DEV_MODE identified');
                 closeModal('create-modal');
                 showLoadingOverlay('Creating game (DEV MODE)...');
 
@@ -2106,8 +2231,13 @@
                 return;
             }
 
+            console.log('🎮 createGameFlow triggered');
+
             // PRODUCTION MODE: Full blockchain flow
-            if (!await ensureReady()) return;
+            if (!await ensureReady()) {
+                console.warn('🎮 ensureReady failed, halting flow');
+                return;
+            }
 
             const stake = $('#stake-input').val();
             const stakeNum = parseFloat(stake);
@@ -2117,24 +2247,33 @@
                 return;
             }
 
-            const MIN_STAKE = 0.01;
-            const MAX_STAKE = 10000;
+            // Fetch limits from contract to avoid InvalidLimits()
+            let minStake = ethers.utils.parseUnits("0.1", 18);
+            let maxStake = ethers.utils.parseUnits("10000", 18);
+            try {
+                const sysState = await moduleContract.getSystemState();
+                minStake = sysState.minGameStake;
+                maxStake = sysState.maxGameStake;
+                console.log(`📊 Contract Limits - Min: ${ethers.utils.formatUnits(minStake, 18)}, Max: ${ethers.utils.formatUnits(maxStake, 18)}`);
+            } catch (e) {
+                console.warn("Could not fetch system state limits, using defaults");
+            }
 
-            if (stakeNum < MIN_STAKE) {
-                showToast(`Minimum stake is ${MIN_STAKE} COFFY`, 'error');
+            const stakeWei = ethers.utils.parseUnits(stake.toString(), 18);
+
+            if (stakeWei.lt(minStake)) {
+                showToast(`Minimum stake is ${ethers.utils.formatUnits(minStake, 18)} COFFY`, 'error');
+                return;
+            }
+            if (stakeWei.gt(maxStake)) {
+                showToast(`Maximum stake is ${ethers.utils.formatUnits(maxStake, 18)} COFFY`, 'error');
                 return;
             }
 
-            if (stakeNum > MAX_STAKE) {
-                showToast(`Maximum stake is ${MAX_STAKE} COFFY`, 'error');
-                return;
-            }
-
-            const stakeWei = ethers.utils.parseUnits(stake, 18);
             const timeLimit = parseInt($('#time-input').val()) || 5;
 
             closeModal('create-modal');
-            showLoadingOverlay('Creating game...', [
+            showLoadingOverlay(`Creating game...`, [
                 'Checking balance',
                 'Approving COFFY tokens',
                 'Creating game on blockchain',
@@ -2143,121 +2282,79 @@
 
             try {
                 updateLoadingProgress('Checking balance');
+                let isConstWallet = false;
                 const balance = await coffyToken.balanceOf(userAddress);
                 if (balance.lt(stakeWei)) {
-                    hideLoadingOverlay();
-                    showToast('Insufficient COFFY balance', 'error');
-                    return;
+                    try {
+                        isConstWallet = await coffyToken.isConstWallet(userAddress);
+                    } catch (e) { }
+
+                    if (!isConstWallet) {
+                        hideLoadingOverlay();
+                        showToast('Insufficient COFFY balance', 'error');
+                        return;
+                    }
                 }
 
                 updateLoadingProgress('Approving COFFY tokens');
-
-                // Check if we need to approve (only once ever with unlimited amount)
-                console.log(`Checking allowance for user: ${userAddress} -> module: ${moduleAddress}`);
-                // Verify moduleAddress is correct
-                if (!moduleAddress || moduleAddress.length !== 42) {
-                    throw new Error(`Invalid module address: ${moduleAddress}`);
+                // Use the new Permit-based flow (SADECE IMZA - NO SPENDING LIMIT PROMPT)
+                const allowanceSecured = await ensureAllowanceWithPermit(moduleAddress, stakeWei);
+                if (!allowanceSecured) {
+                    hideLoadingOverlay();
+                    return;
                 }
 
-                const allowance = await coffyToken.allowance(userAddress, moduleAddress);
-                console.log(`Current allowance: ${allowance.toString()}, Required: ${stakeWei.toString()}`);
+                // BUG1 FIX: gameType tanımla (form'dan yoksa sabit 'chess')
+                const gameType = 'chess';
 
-                if (allowance.lt(stakeWei)) {
-                    console.log('Allowance insufficient. Requesting approval...');
-                    updateLoadingMessage('Please approve COFFY tokens in MetaMask...');
+                // MANDATORY: Stake must be sent as a plain string of the full Wei amount
+                const stakeParam = stakeWei.toString();
 
-                    // Approve INFINITE amount for better UX
-                    const approveTx = await coffyToken.approve(moduleAddress, ethers.constants.MaxUint256);
-                    console.log('Approval tx sent:', approveTx.hash);
-                    updateLoadingMessage('Waiting for approval confirmation...');
-                    await approveTx.wait();
-                    console.log('Approval confirmed on-chain');
-
-                    // WAIT for allowance to reflect on-chain (RPC sync lag fix)
-                    updateLoadingMessage('Verifying approval...');
-                    let retries = 0;
-                    while (retries < 10) {
-                        const newAllowance = await coffyToken.allowance(userAddress, moduleAddress);
-                        if (newAllowance.gte(stakeWei)) {
-                            console.log('✅ Allowance updated on-chain:', newAllowance.toString());
-                            break;
-                        }
-                        console.log(`Waiting for allowance update... (Attempt ${retries + 1})`);
-                        await new Promise(r => setTimeout(r, 2000));
-                        retries++;
-                    }
-
-                    hasApprovedTokens = true;
-                    sessionStorage.setItem('coffyApproved', 'true');
-                } else {
-                    console.log('Allowance is sufficient. Skipping approval.');
-                }
-
-                updateLoadingProgress('Creating game on blockchain');
-
-                // Contract expects: function createGame(uint128 _stakeAmount)
-                const txPromise = moduleContract.createGame(stakeWei);
-                const txTimeout = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error('Transaction timeout')), 60000)
-                );
-                const tx = await Promise.race([txPromise, txTimeout]);
+                console.log(`🎮 Calling createGame with stake: ${stakeParam}`);
+                const tx = await moduleContract.createGame(stakeParam);
 
                 updateLoadingMessage('Waiting for blockchain confirmation...');
                 const receipt = await tx.wait();
 
                 let gameId = null;
                 console.log('📋 Transaction receipt:', receipt);
-                console.log('📋 Receipt logs count:', receipt.logs.length);
 
-                // Try parsing BattleCreated event from receipt logs
-                receipt.logs.forEach((log, index) => {
+                // Parse GameCreated events
+                receipt.logs.forEach((log) => {
                     try {
                         const parsed = moduleContract.interface.parseLog(log);
-                        console.log(`📋 Log ${index}: ${parsed.name}`, parsed.args);
+                        console.log(`📋 Event: ${parsed.name}`, parsed.args);
                         if (parsed.name === 'GameCreated') {
                             gameId = parsed.args.gameId.toString();
-                            console.log('✅ Found gameId from GameCreated event:', gameId);
                         }
-                    } catch (e) {
-                        // Log is from a different contract (e.g., ERC20 Transfer)
-                        console.log(`📋 Log ${index}: Not a module event (${e.message})`);
-                    }
+                    } catch (e) { }
                 });
 
-                // BUG-13 FIX: Fallback nextGameId is race-condition prone.
-                // If event parsing fails, show error rather than using potentially wrong ID.
                 if (!gameId) {
                     try {
-                        console.warn('⚠️ GameCreated event not found in logs, trying fallback...');
-                        const nextId = await moduleContract.nextGameId();
-                        // WARNING: this is only safe if no one else creates a game at the same time.
-                        // In production, if this fires, it's more likely an RPC indexing delay.
-                        // We use it as last resort only.
-                        const fallbackId = (nextId.toNumber() - 1).toString();
-                        console.warn(`⚠️ Fallback gameId: ${fallbackId} — verify this is correct on BaseScan before trusting it.`);
-                        gameId = fallbackId;
-                        showToast('⚠️ Used fallback game ID — check console to verify.', 'warning');
+                        console.warn('⚠️ Event not found in logs, trying fallback...');
+                        const sysState = await moduleContract.getSystemState();
+                        gameId = (sysState.gameId.toNumber() - 1).toString();
                     } catch (fbError) {
-                        console.error('❌ All game ID resolution methods failed:', fbError);
+                        console.error('❌ ID resolution failed:', fbError);
                     }
                 }
 
                 if (gameId) {
                     currentGameId = gameId;
-
-
-
                     updateLoadingProgress('Setting up game room');
-                    updateLoadingMessage('Verifying game on server...');
+                    updateLoadingMessage('Verifying on server...');
 
-                    socket.emit('createRoom', {
-                        gameId,
-                        stake: stakeWei.toString(),
-                        walletAddress: userAddress,
-                        timeLimit: timeLimit
-                    }, (response) => {
+                    try {
+                        const response = await socketEmit('createRoom', {
+                            gameId,
+                            stake: stakeWei.toString(),
+                            walletAddress: userAddress,
+                            timeLimit: timeLimit,
+                            gameType: gameType
+                        });
+
                         hideLoadingOverlay();
-
                         if (!response || response.error) {
                             showToast(response?.error || 'Room creation failed', 'error');
                             return;
@@ -2272,35 +2369,41 @@
                         setupBoardUI('white');
                         chess.reset();
                         board.start();
-                        captured = { w: [], b: [] };
 
                         timerWhite = timeLimit * 60;
                         timerBlack = timeLimit * 60;
-
                         updateUI();
 
-                        showToast('Game created! Waiting for opponent...', 'success');
+                        showToast(`${gameType.charAt(0).toUpperCase() + gameType.slice(1)} created!`, 'success');
                         $('#game-info-text').html(`
-                            Game ID: <strong class="text-gold">${gameId}</strong><br>
-                            Room: <strong>${roomId}</strong><br>
-                            <span class="text-muted">Waiting for opponent...</span>
+                            ID: <strong class="text-gold">${gameId}</strong> | Type: <strong>${gameType}</strong><br>
+                            Room: <strong>${roomId}</strong>
                         `);
+
+                        // Update Mobile Info Bar
+                        $('#mobile-game-id').html(`ID: <span class="text-gold">#${gameId}</span>`);
+                        $('#mobile-status-text').text('In Game');
+                        $('#mobile-stake-info').html(`Stake: <span class="text-gold">${ethers.utils.formatUnits(stakeWei, 18)} COFFY</span>`);
+                        $('.mobile-info-bar').css('display', 'flex');
 
                         ignoreNextClick = false;
                         aiThinking = false;
-                    });
+                    } catch (err) {
+                        hideLoadingOverlay();
+                        showToast('Socket Error: ' + err.message, 'error');
+                    }
                 } else {
                     hideLoadingOverlay();
-                    showToast('Failed to extract game ID', 'error');
+                    showToast('Failed to extract ID from blockchain', 'error');
                 }
             } catch (error) {
                 hideLoadingOverlay();
                 console.error(error);
-                showToast('Error: ' + (error.reason || error.message), 'error');
+                showToast('Blockchain Error: ' + (error.reason || error.message), 'error');
             }
         }
 
-        async function joinPvpGameFlow() {
+        async function joinGameFlow() {
             const inputId = $('#join-game-id').val();
             if (!inputId) {
                 showToast('Please enter a Room ID', 'error');
@@ -2357,7 +2460,18 @@
                 const gameIdRaw = roomInfo.gameId;
                 const gameId = Number(gameIdRaw); // ✅ Always a number for contract calls
                 const roomIdToJoin = roomInfo.roomId;
-                const stakeAmount = ethers.BigNumber.from(roomInfo.stake || '0');
+
+                // BUG3 FIX: stake undefined ise on-chain'den al
+                let stakeAmount = ethers.BigNumber.from(roomInfo.stake || '0');
+                if (stakeAmount.isZero() && gameId && moduleContract) {
+                    try {
+                        const onChain = await moduleContract.getGameInfo(gameId);
+                        stakeAmount = ethers.BigNumber.from(onChain.stakePerPlayer.toString());
+                        console.log('📡 Stake fetched on-chain:', stakeAmount.toString());
+                    } catch (e) {
+                        console.warn('Could not fetch on-chain stake:', e.message);
+                    }
+                }
                 const stakeDisplay = ethers.utils.formatUnits(stakeAmount, 18);
                 console.log('🎮 gameId:', gameId, 'roomId:', roomIdToJoin, 'stake:', stakeAmount.toString());
 
@@ -2400,35 +2514,14 @@
                         return;
                     }
 
-                    // ── Step 3: Allowance check + approval ────────────────────────
-                    updateLoadingMessage('Checking COFFY allowance...');
-                    let allowance = await coffyToken.allowance(userAddress, moduleAddress);
-                    console.log(`Allowance: ${allowance.toString()}, Required: ${stakeAmount.toString()}`);
-
-                    if (allowance.lt(stakeAmount)) {
-                        // Approve unlimited (MaxUint256) — standard DeFi UX, no re-prompts needed
-                        updateLoadingMessage('📝 Please approve COFFY in MetaMask...');
-                        const approveTx = await coffyToken.approve(moduleAddress, ethers.constants.MaxUint256);
-                        console.log('Approval tx sent:', approveTx.hash);
-                        updateLoadingMessage('⏳ Waiting for approval confirmation...');
-                        await approveTx.wait(1); // Wait 1 confirmation
-
-                        // ── Re-verify allowance on-chain after approval ───────────
-                        updateLoadingMessage('Verifying approval on-chain...');
-                        let verified = false;
-                        for (let i = 0; i < 5; i++) {
-                            await new Promise(r => setTimeout(r, 2000)); // 2s between checks
-                            allowance = await coffyToken.allowance(userAddress, moduleAddress);
-                            console.log(`Post-approval allowance check ${i + 1}: ${allowance.toString()}`);
-                            if (allowance.gte(stakeAmount)) { verified = true; break; }
-                        }
-                        if (!verified) {
-                            hideLoadingOverlay();
-                            showToast('Approval not yet visible on-chain. Please try joining again.', 'warning');
-                            return;
-                        }
-                        showToast('✅ COFFY approved!', 'success');
+                    // ── Step 3: Allowance check + Permit (EIP-2612) ──────────
+                    updateLoadingMessage('Checking COFFY authorization...');
+                    const allowanceSecured = await ensureAllowanceWithPermit(moduleAddress, stakeAmount);
+                    if (!allowanceSecured) {
+                        hideLoadingOverlay();
+                        return;
                     }
+                    showToast('✅ COFFY approved!', 'success');
 
                     // ── Step 4: Join on blockchain ─────────────────────────────────
                     updateLoadingMessage('Joining game on blockchain...');
@@ -2436,6 +2529,7 @@
                     if (!moduleContract) {
                         moduleContract = new ethers.Contract(moduleAddress, moduleAbi, signer);
                     }
+                    // Contract expects: joinGame(uint256 id)
                     const joinTx = await moduleContract.joinGame(gameId);
                     console.log('🎮 joinGame tx sent:', joinTx.hash);
                     updateLoadingMessage('⏳ Waiting for blockchain confirmation...');
@@ -2444,13 +2538,16 @@
 
                     // ── Step 5: Join socket room ───────────────────────────────────
                     updateLoadingMessage('Joining game room...');
-                    socket.emit('joinRoom', {
-                        roomId: roomIdToJoin,
-                        walletAddress: userAddress,
-                        gameId
-                    }, (response) => {
-                        hideLoadingOverlay();
+                    console.log('🎮 Emitting joinRoom via socketEmit...');
 
+                    try {
+                        const response = await socketEmit('joinRoom', {
+                            roomId: roomIdToJoin,
+                            walletAddress: userAddress,
+                            gameId
+                        });
+
+                        hideLoadingOverlay();
                         if (!response || response.error) {
                             showToast(response?.error || 'Join failed', 'error');
                             return;
@@ -2465,10 +2562,18 @@
                         setupBoardUI('black');
                         showToast('Joined! Game starting...', 'success');
                         $('#game-info-text').html(`Game ID: <span class="text-gold">${gameId}</span>`);
+
+                        // Update Mobile Info Bar
+                        $('#mobile-game-id').html(`ID: <span class="text-gold">#${gameId}</span>`);
+                        $('#mobile-status-text').text('In Game');
+                        $('#mobile-stake-info').html(`Stake: <span class="text-gold">${parseFloat(stakeDisplay).toFixed(2)} COFFY</span>`);
+                        $('.mobile-info-bar').css('display', 'flex');
                         ignoreNextClick = false;
                         aiThinking = false;
-                    });
-
+                    } catch (err) {
+                        hideLoadingOverlay();
+                        showToast('Socket Error: ' + err.message, 'error');
+                    }
                 } catch (error) {
                     hideLoadingOverlay();
                     console.error(error);
@@ -2479,26 +2584,30 @@
 
 
             // First try as Room ID
-            socket.emit('getRoomInfo', inputIdValue, async (roomInfo) => {
+            try {
+                console.log('🔍 Checking room info via socket...');
+                const roomInfo = await socketEmit('getRoomInfo', inputIdValue, 5000);
+
                 if (roomInfo && !roomInfo.error) {
-                    // Found by Room ID
                     console.log('✅ Found room by Room ID');
                     await joinWithRoomInfo(roomInfo);
                 } else {
-                    // Try as Game ID (blockchain gameId)
                     console.log('🔍 Room ID not found, trying as Game ID...');
-                    socket.emit('findRoomByGameId', inputIdValue, async (gameRoomInfo) => {
-                        if (gameRoomInfo && !gameRoomInfo.error) {
-                            // Found by Game ID
-                            console.log('✅ Found room by Game ID');
-                            await joinWithRoomInfo(gameRoomInfo);
-                        } else {
-                            hideLoadingOverlay();
-                            showToast('Game not found. Check ID and try again.', 'error');
-                        }
-                    });
+                    const gameRoomInfo = await socketEmit('findRoomByGameId', inputIdValue, 5000);
+
+                    if (gameRoomInfo && !gameRoomInfo.error) {
+                        console.log('✅ Found room by Game ID');
+                        await joinWithRoomInfo(gameRoomInfo);
+                    } else {
+                        hideLoadingOverlay();
+                        showToast('Game not found. Check ID and try again.', 'error');
+                    }
                 }
-            });
+            } catch (err) {
+                hideLoadingOverlay();
+                console.error('Join flow socket error:', err);
+                showToast('Connection error: ' + err.message, 'error');
+            }
         }
 
         async function claimReward() {
@@ -2521,9 +2630,9 @@
             try {
                 // ── STEP 1: Check on-chain status ──────────────────────────
                 showToast('⏳ Checking blockchain status...', 'info');
-                let gameInfo = await moduleContract.games(gameId);
-                let statusNum = typeof gameInfo.status === 'object' ? gameInfo.status.toNumber() : Number(gameInfo.status);
-                console.log(`claimReward: game ${gameId} status = ${statusNum}`);
+                let gameInfo = await moduleContract.getGameInfo(gameId);
+                let statusNum = Number(gameInfo.status);
+                console.log(`claimReward: match ${gameId} status = ${statusNum}`);
 
                 if (statusNum === 3) {
                     showToast('Game was cancelled.', 'error');
@@ -2531,10 +2640,31 @@
                     return;
                 }
 
-                // ── STEP 2: Submit Signature to Backend ────────────────────
-                const signature = myColor === 'white' ? window._lastGameSignatureWhite : window._lastGameSignatureBlack;
+                // ── STEP 2: Get Signature — winner color bazlı, deadline zorunlu değil ──
+                // Kazanan rengi: server'dan gelen _lastGameWinnerColor veya myColor karşılaştırması
+                const winnerColor = window._lastGameWinnerColor; // 'white' | 'black' | 'draw'
+                let signature = winnerColor === 'white'
+                    ? window._lastGameSignatureWhite
+                    : winnerColor === 'black'
+                        ? window._lastGameSignatureBlack
+                        : (window._lastGameSignatureWhite || window._lastGameSignatureBlack); // draw: ikisi de aynı
+
+                // Eğer imza yoksa socket üzerinden sunucudan iste
+                if (!signature && socket && socket.connected) {
+                    showToast('Requesting signature from server...', 'info');
+                    try {
+                        const sigData = await socketEmit('requestSignature', { gameId, walletAddress: userAddress }, 10000);
+                        if (sigData?.signature) {
+                            signature = sigData.signature;
+                            console.log('✅ Signature received from server on demand');
+                        }
+                    } catch (e) {
+                        console.warn('Could not get on-demand signature:', e.message);
+                    }
+                }
+
                 if (!signature) {
-                    showToast('Wait for server signature...', 'warning');
+                    showToast('Server signature not available. Please wait and try again.', 'warning');
                     setBtns(false);
                     return;
                 }
@@ -2550,18 +2680,14 @@
                         setBtns(false);
                         return;
                     }
-                } catch (_) { /* fallback logic if needed */ }
-
-                console.log("Signature obtained from server:", signature);
-
-                // Check if it's a draw or win based on the winner address
-                let tx;
-                if (gameInfo.winner === ethers.constants.AddressZero && statusNum === 1) { // It's still active or draw, but we have signature
-                    console.warn("Falling back to standard verification flow...");
-                    // Since verify is removed, fallback to letting contract fail
+                } catch (_) {
+                    console.warn("hasClaimedGame not in ABI, assuming not claimed...");
                 }
 
-                if (window._lastGameWinnerColor === 'draw') {
+                console.log("📝 Submitting signature:", signature.substring(0, 20) + "...", "for gameId:", gameId);
+
+                let tx;
+                if (winnerColor === 'draw') {
                     tx = await moduleContract.claimGameDraw(gameId, signature);
                 } else {
                     tx = await moduleContract.claimGameWin(gameId, signature);
@@ -2589,80 +2715,98 @@
         }
 
         // ============ SOCKET HANDLERS ============
-        function initSocket() {
-            // Dynamic Socket URL: Supports Localhost, LAN, and Production
-            const hostname = window.location.hostname || 'localhost';
-            const protocol = window.location.protocol === 'https:' ? 'https:' : 'http:';
-            const isProduction = hostname === 'coffeechess.com';
+        let currentSocketUrlIndex = 0;
+        const socketUrls = [
+            `http://localhost:3005`,
+            `http://localhost:3000`,
+            `https://coffychess.onrender.com`
+        ];
 
-            // If production, use the render backend
-            // If dev/lan, force port 3005
-            let url;
-            if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname.startsWith('192.168.')) {
-                url = `http://${hostname}:3005`;
-            } else {
-                url = 'https://coffychess.onrender.com';
+        // Helper to emit with timeout — waits for socket to connect before emitting
+        function socketEmit(event, data, timeout = 8000) {
+            return new Promise(async (resolve, reject) => {
+                // BUG2 FIX: Wait for socket to connect (handles fallback server transitions)
+                const waitStart = Date.now();
+                const SOCKET_WAIT_MS = 8000;
+                const SOCKET_POLL_INTERVAL = 300;
+
+                while ((!socket || !socket.connected) && (Date.now() - waitStart) < SOCKET_WAIT_MS) {
+                    await new Promise(r => setTimeout(r, SOCKET_POLL_INTERVAL));
+                }
+
+                if (!socket || !socket.connected) {
+                    return reject(new Error('Socket not connected — server unreachable'));
+                }
+
+                const timer = setTimeout(() => {
+                    reject(new Error(`Timeout waiting for server (${event})`));
+                }, timeout);
+
+                socket.emit(event, data, (response) => {
+                    clearTimeout(timer);
+                    resolve(response);
+                });
+            });
+        }
+
+        function initSocket() {
+            const hostname = window.location.hostname || 'localhost';
+
+            // If we are NOT on a local hostname, skip the local port trials and go to production
+            if (hostname !== 'localhost' && hostname !== '127.0.0.1' && !hostname.startsWith('192.168.')) {
+                currentSocketUrlIndex = 2; // Index of production URL
             }
 
-            console.log('🔌 Connecting to socket server:', url);
+            const url = socketUrls[currentSocketUrlIndex];
+            console.log(`🔌 Attempting socket connection (${currentSocketUrlIndex + 1}/${socketUrls.length}): ${url}`);
 
-            socket = io(url, {
+            if (socket) {
+                socket.removeAllListeners();
+                socket.disconnect();
+            }
+
+            const thisSocket = io(url, {
                 reconnection: true,
-                reconnectionAttempts: 5,
+                reconnectionAttempts: 2,
                 reconnectionDelay: 1000,
-                reconnectionDelayMax: 5000,
-                timeout: 20000
+                timeout: 10000, // Slightly longer for slower networks (Render)
+                transports: ['polling', 'websocket'] // Ensure fallback
             });
+            socket = thisSocket;
 
-            socket.on('connect', () => {
-                if (userAddress && !reconnecting) {
-                    tryReconnect();
+            thisSocket.on('connect', () => {
+                if (thisSocket !== socket) return;
+                console.log('🚀 Socket connected to:', url);
+                clearTimeout(window._socketFallbackTimer);
+
+                // Track current server for session persistence
+                localStorage.setItem('lastCoffeeServerUrl', url);
+
+                // RECONNECT SPAM FIX: tryReconnect sadece sayfa başına 1 kez çalışır.
+                // Fallback socket yeniden bağlandığında veya aktif oyun yoksa tekrar çalışmaz.
+                if (userAddress && !reconnecting && !isConnecting && !window._sessionReconnectDone) {
+                    window._sessionReconnectDone = true;
+                    setTimeout(() => tryReconnect(), 1000);
                 }
             });
 
-            socket.on('disconnect', (reason) => {
-                if (reason === 'io server disconnect') {
-                    // Server forced disconnect, try reconnect
-                    // showToast('Connection lost. Attempting to reconnect...', 'warning');
-                    socket.connect();
-                } else if (reason === 'transport close') {
-                    // showToast('Connection lost. Attempting to reconnect...', 'warning');
+            thisSocket.on('connect_error', (error) => {
+                if (thisSocket !== socket) return;
+
+                console.warn(`⚠️ Socket connection failed for ${url}:`, error.message);
+
+                if (currentSocketUrlIndex < socketUrls.length - 1) {
+                    currentSocketUrlIndex++;
+                    console.log(`🔄 Socket fallback: ${url} failed. Trying next...`);
+                    clearTimeout(window._socketFallbackTimer);
+                    window._socketFallbackTimer = setTimeout(() => {
+                        initSocket();
+                    }, 500);
                 } else {
-                    // showToast('Connection issue. Please wait...', 'warning');
+                    // SONSUZ DÖNGÜ FIX: tüm sunucular denendi, döngüye girme
+                    console.warn('⚠️ All socket servers unreachable. Will not retry automatically.');
+                    showToast('Server connection failed. Please refresh the page.', 'error');
                 }
-            });
-
-            socket.on('reconnect', (attemptNumber) => {
-                showToast(`Reconnected`, 'success');
-                // Try to restore game session
-                if (userAddress && roomId) {
-                    tryReconnect();
-                }
-            });
-
-            // (gameResult handler removed — BUG-09: was dead code, only logged to console)
-
-            socket.on('reconnect_error', (error) => {
-                // showToast('Reconnection failed. Please refresh the page.', 'error');
-            });
-
-            socket.on('reconnect_failed', () => {
-                showToast('Could not reconnect. Please refresh the page.', 'error');
-            });
-
-            // Handle verification progress feedback from server
-            socket.on('verificationProgress', (data) => {
-                console.log('Verification update:', data);
-                if (data && data.message) {
-                    updateLoadingMessage(data.message);
-                }
-            });
-
-            // Handle connection errors
-            socket.on('connect_error', (error) => {
-                console.error('Socket connection error:', error);
-                showToast('Connection error. Please check your internet connection.', 'error');
-                hideLoadingOverlay();
             });
 
             socket.on('startGame', (data) => {
@@ -2846,7 +2990,10 @@
                 // Store signatures so claimReward can submit them
                 window._lastGameSignatureWhite = data.signatureWhite;
                 window._lastGameSignatureBlack = data.signatureBlack;
+                window._lastGameDeadline = data.deadline;
                 window._lastGameWinnerColor = data.winner;
+                window._lastGameWhiteAddress = data.whiteAddress;
+                window._lastGameBlackAddress = data.blackAddress;
 
                 showWinnerModal(data.winner, data.reason, data.winnerAddress);
             });
@@ -3622,55 +3769,6 @@
         }
 
         // ============ UTILITY FUNCTIONS ============
-        // Toast queue to prevent overlapping
-        const toastQueue = [];
-        let isShowingToast = false;
-
-        function showToast(message, type = 'info', duration = 3000) {
-            toastQueue.push({ message, type, duration });
-            if (!isShowingToast) {
-                processToastQueue();
-            }
-        }
-
-        function processToastQueue() {
-            if (toastQueue.length === 0) {
-                isShowingToast = false;
-                return;
-            }
-
-            isShowingToast = true;
-            const { message, type, duration } = toastQueue.shift();
-
-            // Create unique ID for this toast
-            const toastId = 'toast-' + Date.now();
-
-            const toast = $(`
-                <div id="${toastId}" class="toast toast-${type}">
-                    <div style="display: flex; align-items: center; gap: 10px;">
-                        <span class="toast-icon">${getToastIcon(type)}</span>
-                        <span>${message}</span>
-                    </div>
-                </div>
-            `);
-
-            $('body').append(toast);
-
-            // Animate in
-            requestAnimationFrame(() => {
-                toast.addClass('show');
-            });
-
-            // Remove after duration
-            setTimeout(() => {
-                toast.removeClass('show');
-                setTimeout(() => {
-                    toast.remove();
-                    processToastQueue();
-                }, 300);
-            }, duration);
-        }
-
         function getToastIcon(type) {
             const icons = {
                 success: '✓',
@@ -3774,16 +3872,18 @@
             }
         }
 
-        const soundCapture = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_common/capture.mp3');
-
         function playCaptureSound() {
-            soundCapture.play().catch(e => console.log('Audio error:', e));
+            if (audioEnabled && sounds.capture) {
+                sounds.capture.currentTime = 0;
+                sounds.capture.play().catch(e => console.log('Audio capture error:', e));
+            }
         }
 
-        const soundCheck = new Audio('https://images.chesscomfiles.com/chess-themes/sounds/_common/move-check.mp3');
-
         function playCheckSound() {
-            soundCheck.play().catch(e => console.log('Audio error:', e));
+            if (audioEnabled && sounds.check) {
+                sounds.check.currentTime = 0;
+                sounds.check.play().catch(e => console.log('Audio check error:', e));
+            }
         }
 
         function newLocalGame(difficulty = 'medium') {
@@ -3851,7 +3951,7 @@
                 const capturesMoves = moves.filter(m => m.captured);
                 const checkMoves = moves.filter(m => {
                     chess.move(m);
-                    const inCheck = chess.inCheck();
+                    const inCheck = chess.in_check();
                     chess.undo();
                     return inCheck;
                 });
@@ -4266,42 +4366,14 @@
             }
         }
 
-        // Initialize chat input handlers
-        $(document).ready(function () {
-            $('#chat-input').on('keydown', function (e) {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault();
-                    sendChatMessage();
-                }
-            });
-
-            // Quick emoji support
-            $('#chat-input').on('input', function () {
-                const text = $(this).val();
-                // Auto-convert common emoticons
-                const converted = text
-                    .replace(/:\)/g, '😊')
-                    .replace(/:\(/g, '😞')
-                    .replace(/:D/g, '😄')
-                    .replace(/:P/g, '😛')
-                    .replace(/<3/g, '❤️')
-                    .replace(/:fire:/g, '🔥')
-                    .replace(/:check:/g, '✓')
-                    .replace(/:cross:/g, '✕');
-                if (converted !== text) {
-                    $(this).val(converted);
-                }
-            });
-        });
 
 
         // ============ EXPOSE FUNCTIONS TO WINDOW (MODULE FIX) ============
         window.connectWallet = connectWallet;
-        window.startPvpGameFlow = startPvpGameFlow;
-        window.joinPvpGameFlow = joinPvpGameFlow;
+        window.createGameFlow = createGameFlow;
+        window.joinGameFlow = joinGameFlow;
         window.claimReward = claimReward;
         window.resign = resign;
-        window.flipBoard = () => board.flip(); // Simple wrapper
         window.openModal = (id) => {
             $(`#${id}`).addClass('active');
         };

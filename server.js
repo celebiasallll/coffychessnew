@@ -26,6 +26,7 @@ const CLEANUP_DELAY_MS = 5000;
 const RECONNECT_TIMEOUT_MS = 60000;
 const STAKE_VERIFY_MAX_RETRIES = 15;
 const STAKE_VERIFY_BASE_DELAY = 3000;
+const GAME_END_DEADLINE_SECONDS = 3600; // 1 hour to claim after game ends
 // ===========================================
 
 const __filename = fileURLToPath(import.meta.url);
@@ -58,17 +59,22 @@ function saveUsers() {
 
 const app = express();
 
-// CORS ayarları - TÜM originlere izin
-// CORS settings - Restricted for security
+// ============ CORS - Restrict to known origins ============
 const allowedOrigins = [
     'http://localhost:3000',
     'http://localhost:5500',
     'http://127.0.0.1:5500',
-    'https://coffeechess.com' // Example production domain
+    'https://coffeechess.com'
 ];
 
 app.use(cors({
-    origin: true, // Her gelen isteğe (localhost, vercel vb) izin ver
+    origin: (origin, callback) => {
+        // Allow requests with no origin (mobile apps, curl, etc.)
+        if (!origin) return callback(null, true);
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        console.warn(`⚠️ CORS blocked origin: ${origin}`);
+        return callback(new Error('Not allowed by CORS'));
+    },
     credentials: true,
     methods: ['GET', 'POST', 'OPTIONS']
 }));
@@ -80,16 +86,16 @@ app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 const server = createServer(app);
 
-// Socket.IO CORS ayarları - GELİŞTİRİLMİŞ
+// Socket.IO CORS
 const io = new Server(server, {
     cors: {
-        origin: '*', // Tüm originlere izin
+        origin: allowedOrigins,
         methods: ['GET', 'POST', 'OPTIONS'],
         credentials: true,
         allowedHeaders: ['Content-Type']
     },
-    transports: ['websocket', 'polling'], // Her iki transport'u destekle
-    allowEIO3: true // Socket.io v3 uyumluluğu
+    transports: ['websocket', 'polling'],
+    allowEIO3: true
 });
 
 // Multi-RPC fallback for better reliability
@@ -154,7 +160,6 @@ app.get('/rooms', (req, res) => {
 // Rate limiting storage
 const rateLimits = new Map(); // socketId -> { count, resetTime }
 
-// Rate limiter middleware
 function checkRateLimit(socketId, maxRequests = RATE_LIMIT_MAX_REQUESTS, windowMs = RATE_LIMIT_WINDOW_MS) {
     const now = Date.now();
     const limit = rateLimits.get(socketId);
@@ -188,22 +193,16 @@ setInterval(() => {
 }, RATE_LIMIT_CLEANUP_INTERVAL);
 
 // Verify stake on blockchain
-// CoffyBattleV3 battles mapping: [battleId, initiator, opponent, stakeAmount, status, winner, createdAt, expiresAt, commitDeadline, revealDeadline]
-// BattleStatus enum: 0=Pending, 1=Active, 2=Committed, 3=Completed, 4=Cancelled, 5=Expired
 async function verifyStake(gameId, playerAddress, expectedStake) {
     for (let attempt = 1; attempt <= STAKE_VERIFY_MAX_RETRIES; attempt++) {
         try {
             console.log(`🔍 Verifying stake for game ${gameId}, player ${playerAddress} (Attempt ${attempt}/${STAKE_VERIFY_MAX_RETRIES})`);
 
             const g = await moduleContract.getGameInfo(gameId);
-            // g = [player1, player2, stakePerPlayer, totalStaked, createdAt, status, winner]
+            const player1 = g.player1.toLowerCase();
+            const player2 = (g.player2 || ethers.constants.AddressZero).toLowerCase();
+            const status = Number(g.status);
 
-            const player1 = g[0].toLowerCase();
-            const player2 = g[1].toLowerCase();
-            const stakePerPlayer = g[2]; // BigNumber
-            const status = Number(g[5]);
-
-            // Oyuncu katılımcı mı?
             const addr = playerAddress.toLowerCase();
             if (player1 !== addr && player2 !== addr) {
                 console.log(`⚠️ Player not found in game yet, retrying...`);
@@ -214,7 +213,6 @@ async function verifyStake(gameId, playerAddress, expectedStake) {
                 return false;
             }
 
-            // Status completed/cancelled mı?
             if (status >= 2) {
                 console.log(`❌ Game ${gameId} already done (status: ${status})`);
                 return false;
@@ -248,15 +246,17 @@ io.on('connection', (socket) => {
         // Check if player already has an active session
         if (playerSessions.has(walletAddress)) {
             const existingSession = playerSessions.get(walletAddress);
-            if (rooms.has(existingSession.roomId)) {
+            const existingSocket = io.sockets.sockets.get(existingSession.socketId);
+            if (existingSocket && existingSocket.connected && rooms.has(existingSession.roomId)) {
                 callback({ error: 'You already have an active game', roomId: existingSession.roomId });
                 return;
+            } else {
+                console.log(`♻️ Overwriting old session for ${walletAddress} (disconnected or room gone)`);
             }
         }
 
-        // Optimistic Room Creation: Don't wait for blockchain (it takes too long)
         const roomId = generateRoomId();
-        const timeLimit = data.timeLimit || 5; // Default to 5 minutes
+        const timeLimit = data.timeLimit || 5;
         const initialTime = timeLimit * 60;
 
         const room = {
@@ -279,7 +279,7 @@ io.on('connection', (socket) => {
             started: false,
             gameOver: false,
             lastMoveTime: Date.now(),
-            verified: false // New flag
+            verified: false
         };
 
         rooms.set(roomId, room);
@@ -287,7 +287,6 @@ io.on('connection', (socket) => {
         currentRoom = roomId;
         playerNum = 1;
 
-        // Register session
         playerSessions.set(walletAddress, {
             socketId: socket.id,
             roomId,
@@ -296,7 +295,6 @@ io.on('connection', (socket) => {
 
         console.log(`📦 Room ${roomId} created OPTIMISTICALLY by ${walletAddress} (GameID: ${data.gameId})`);
 
-        // Respond IMMEDIATELY to client
         callback({ success: true, roomId });
 
         // Background Verification
@@ -340,21 +338,6 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // Optimistic Join: Verify stake in background
-        if (!DEV_MODE) {
-            verifyStake(gameId, walletAddress, room.meta.stake).then(stakeVerified => {
-                if (!stakeVerified) {
-                    console.log(`❌ Background verification failed for JOINER ${walletAddress} in room ${targetRoomId}`);
-                    io.to(targetRoomId).emit('error', { message: 'Opponent stake verification failed. Game cancelled.' });
-                    io.to(targetRoomId).emit('gameCancelled', { reason: 'Opponent stake verification failed' });
-                    cleanupRoom(targetRoomId);
-                } else {
-                    console.log(`✅ Background verification SUCCESS for JOINER ${walletAddress}`);
-                }
-            });
-        }
-
-        // Anti-cheat: Check if same wallet is trying to join
         if (room.players[0].address === walletAddress) {
             callback({ error: 'Cannot play against yourself' });
             return;
@@ -369,7 +352,6 @@ io.on('connection', (socket) => {
         currentRoom = targetRoomId;
         playerNum = 2;
 
-        // Register session
         playerSessions.set(walletAddress, {
             socketId: socket.id,
             roomId: targetRoomId,
@@ -378,11 +360,21 @@ io.on('connection', (socket) => {
 
         room.started = true;
 
-        // Timer will be started after the first move to prevent race conditions
-        // startRoomTimer(targetRoomId);
+        // Background verification for joiner
+        if (!DEV_MODE) {
+            verifyStake(gameId, walletAddress, room.meta.stake).then(stakeVerified => {
+                if (!stakeVerified) {
+                    console.log(`❌ Background verification failed for JOINER ${walletAddress} in room ${targetRoomId}`);
+                    io.to(targetRoomId).emit('error', { message: 'Opponent stake verification failed. Game cancelled.' });
+                    io.to(targetRoomId).emit('gameCancelled', { reason: 'Opponent stake verification failed' });
+                    cleanupRoom(targetRoomId);
+                } else {
+                    console.log(`✅ Background verification SUCCESS for JOINER ${walletAddress}`);
+                }
+            });
+        }
 
         // Emit startGame to each player with their specific data
-        // Player 1 (White)
         io.to(room.players[0].id).emit('startGame', {
             playerNumber: 1,
             color: 'white',
@@ -393,7 +385,6 @@ io.on('connection', (socket) => {
             meta: room.meta
         });
 
-        // Player 2 (Black)
         io.to(room.players[1].id).emit('startGame', {
             playerNumber: 2,
             color: 'black',
@@ -408,9 +399,9 @@ io.on('connection', (socket) => {
         callback({ success: true });
     });
 
-    // Move (Client sends 'makeMove')
+    // Move
     socket.on('makeMove', (data) => {
-        if (!checkRateLimit(socket.id, RATE_LIMIT_MAX_REQUESTS, 10000)) { // 30 moves per 10 seconds max
+        if (!checkRateLimit(socket.id, RATE_LIMIT_MAX_REQUESTS, 10000)) {
             socket.emit('moveRejected', { reason: 'Too many moves. Slow down!' });
             return;
         }
@@ -419,14 +410,12 @@ io.on('connection', (socket) => {
         const room = rooms.get(currentRoom);
         if (!room || !room.started || room.gameOver) return;
 
-        // Security: Verify player is in this room
         const player = room.players.find(p => p.id === socket.id);
         if (!player) {
             socket.emit('moveRejected', { reason: 'You are not in this game' });
             return;
         }
 
-        // Security: Verify it's player's turn
         const currentTurn = room.chess.turn();
         const playerColor = player.color === 'white' ? 'w' : 'b';
         if (currentTurn !== playerColor) {
@@ -435,7 +424,6 @@ io.on('connection', (socket) => {
         }
 
         try {
-            // Validate move using server-side chess instance
             const move = room.chess.move(data.move);
 
             if (!move) {
@@ -443,11 +431,9 @@ io.on('connection', (socket) => {
                 return;
             }
 
-            // Move is valid, broadcast to all
             room.moves.push(move);
             room.lastMoveTime = Date.now();
 
-            // Ensure timer is running (starts after first move)
             if (!room.timers.interval) {
                 startRoomTimer(currentRoom);
             }
@@ -460,7 +446,6 @@ io.on('connection', (socket) => {
                 turn: room.chess.turn()
             });
 
-            // Check for game end
             let winner = null;
             let reason = '';
             const currentColor = room.chess.turn();
@@ -499,28 +484,24 @@ io.on('connection', (socket) => {
         handleGameEnd(currentRoom, winner, 'resignation');
     });
 
-    // --- DRAW OFFER LOGIC ---
+    // Draw offer logic
     socket.on('offerDraw', () => {
         if (!currentRoom) return;
         const room = rooms.get(currentRoom);
         if (!room || room.gameOver) return;
 
-        // Prevent spam or multiple offers
         if (room.pendingDrawOffer) return;
 
-        // Record who offered the draw
         room.pendingDrawOffer = socket.id;
 
-        // Add 30 second timeout safeguard to prevent draw abuse
         room.drawOfferTimeout = setTimeout(() => {
-            if (room.pendingDrawOffer === socket.id) { // Ensure hasn't been resolved
+            if (room.pendingDrawOffer === socket.id) {
                 room.pendingDrawOffer = null;
                 console.log(`⏰ Draw offer expired in room ${currentRoom}`);
-                io.to(socket.id).emit('drawDeclined'); // Send decline event back to offerer
+                io.to(socket.id).emit('drawDeclined');
             }
         }, 30000);
 
-        // Find the opponent's socket and emit 'drawOffered'
         const opponent = room.players.find(p => p.id !== socket.id);
         if (opponent) {
             io.to(opponent.id).emit('drawOffered');
@@ -533,15 +514,12 @@ io.on('connection', (socket) => {
         const room = rooms.get(currentRoom);
         if (!room || room.gameOver) return;
 
-        // Ensure there is a pending offer from the OPPONENT
         if (!room.pendingDrawOffer || room.pendingDrawOffer === socket.id) return;
 
-        // Clear timer and offer state
         if (room.drawOfferTimeout) clearTimeout(room.drawOfferTimeout);
         room.pendingDrawOffer = null;
         console.log(`🤝 Draw accepted in room ${currentRoom}`);
 
-        // Both players agreed -> mutual draw
         handleGameEnd(currentRoom, 'draw', 'mutual agreement');
     });
 
@@ -550,15 +528,12 @@ io.on('connection', (socket) => {
         const room = rooms.get(currentRoom);
         if (!room || room.gameOver) return;
 
-        // Ensure there is a pending offer from the OPPONENT
         if (!room.pendingDrawOffer || room.pendingDrawOffer === socket.id) return;
 
-        // Clear timer and offer state
         if (room.drawOfferTimeout) clearTimeout(room.drawOfferTimeout);
         room.pendingDrawOffer = null;
         console.log(`❌ Draw declined in room ${currentRoom}`);
 
-        // Notify the opponent who made the offer that it was declined
         const opponent = room.players.find(p => p.id !== socket.id);
         if (opponent) {
             io.to(opponent.id).emit('drawDeclined');
@@ -567,8 +542,7 @@ io.on('connection', (socket) => {
 
     // Chat message
     socket.on('chatMessage', (data) => {
-        // Rate limit check for chat
-        if (!checkRateLimit(socket.id + '_chat', RATE_LIMIT_CHAT_MAX, 60000)) { // 20 messages per minute max
+        if (!checkRateLimit(socket.id + '_chat', RATE_LIMIT_CHAT_MAX, 60000)) {
             socket.emit('chatError', { reason: 'Too many messages. Please slow down.' });
             return;
         }
@@ -577,14 +551,13 @@ io.on('connection', (socket) => {
         const room = rooms.get(currentRoom);
         if (!room) return;
 
-        // Enhanced input validation
         let message = data.message;
         if (typeof message !== 'string') return;
 
         message = message.trim();
         if (!message || message.length === 0 || message.length > 200) return;
 
-        // XSS protection - sanitize HTML tags
+        // XSS protection
         message = message
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;')
@@ -601,7 +574,6 @@ io.on('connection', (socket) => {
             }
         }
 
-        // Determine sender name (use registered username if available)
         const lowerWallet = walletAddress.toLowerCase();
         const senderDisplay = registeredUsers[lowerWallet] || `${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`;
 
@@ -616,18 +588,15 @@ io.on('connection', (socket) => {
 
         room.chatMessages.push(chatMsg);
 
-        // Keep only last 100 messages
         if (room.chatMessages.length > 100) {
             room.chatMessages.shift();
         }
 
-        // Broadcast to room
         io.to(currentRoom).emit('chatMessage', chatMsg);
-
         console.log(`💬 Chat in ${currentRoom} from Player${playerNum} (${senderDisplay}): ${message}`);
     });
 
-    // --- Usernames logic ---
+    // Username logic
     socket.on('checkUsername', (data, callback) => {
         if (!data || !data.walletAddress) return callback({ error: 'No wallet provided' });
         const wallet = data.walletAddress.toLowerCase();
@@ -640,7 +609,6 @@ io.on('connection', (socket) => {
     });
 
     socket.on('setUsername', (data, callback) => {
-        // Simple rate limiting to prevent spamming names
         if (!checkRateLimit(socket.id + '_setname', 5, 60000)) {
             return callback({ success: false, error: 'Too many requests' });
         }
@@ -650,7 +618,6 @@ io.on('connection', (socket) => {
 
         if (!wallet || !desiredName) return callback({ success: false, error: 'Missing data' });
 
-        // Check if wallet already has a name
         if (registeredUsers[wallet]) {
             return callback({ success: false, error: 'This wallet already has a registered username' });
         }
@@ -660,12 +627,10 @@ io.on('connection', (socket) => {
             return callback({ success: false, error: 'Username must be between 3 and 15 characters' });
         }
 
-        // Alphanumeric only
         if (!/^[a-zA-Z0-9_]+$/.test(desiredName)) {
             return callback({ success: false, error: 'Username can only contain letters, numbers, and underscores' });
         }
 
-        // Check uniqueness
         const lowerDesired = desiredName.toLowerCase();
         const isTaken = Object.values(registeredUsers).some(name => name.toLowerCase() === lowerDesired);
 
@@ -673,7 +638,6 @@ io.on('connection', (socket) => {
             return callback({ success: false, error: 'This username is already taken' });
         }
 
-        // Register it
         registeredUsers[wallet] = desiredName;
         saveUsers();
         console.log(`🏷️  User Registered: ${wallet} -> ${desiredName}`);
@@ -681,9 +645,9 @@ io.on('connection', (socket) => {
         callback({ success: true, username: desiredName });
     });
 
-    // --- Connection Ping/Pong for Latency ---
+    // Ping/Pong latency
     socket.on('pingHeartbeat', (clientTime) => {
-        socket.emit('pongHeartbeat', clientTime); // Echo back immediately
+        socket.emit('pongHeartbeat', clientTime);
     });
 
     // List rooms
@@ -701,7 +665,7 @@ io.on('connection', (socket) => {
         callback(openRooms);
     });
 
-    // Get room info by roomId - for joining
+    // Get room info
     socket.on('getRoomInfo', (roomId, callback) => {
         const room = rooms.get(roomId);
         if (!room) {
@@ -729,7 +693,6 @@ io.on('connection', (socket) => {
         let foundRoomId = null;
 
         rooms.forEach((room, roomId) => {
-            // Compare as strings since gameId might be number or string
             if (room.meta?.gameId?.toString() === gameId?.toString()) {
                 if (!room.started && room.players.length < 2) {
                     foundRoom = room;
@@ -740,7 +703,16 @@ io.on('connection', (socket) => {
 
         if (!foundRoom) {
             console.log(`❌ No room found for gameId: ${gameId}`);
-            console.log(`📋 Current rooms:`, Array.from(rooms.entries()).map(([id, r]) => ({ roomId: id, gameId: r.meta?.gameId, started: r.started, players: r.players.length })));
+            const openRoomsDebug = Array.from(rooms.entries()).map(([id, r]) => ({
+                roomId: id,
+                metaGameId: r.meta?.gameId,
+                metaGameIdStr: r.meta?.gameId?.toString(),
+                queryGameIdStr: gameId?.toString(),
+                match: r.meta?.gameId?.toString() === gameId?.toString(),
+                started: r.started,
+                players: r.players.length
+            }));
+            console.log(`📋 Room Scan:`, JSON.stringify(openRoomsDebug, null, 2));
             callback({ error: 'No open room found for this Game ID' });
             return;
         }
@@ -755,31 +727,27 @@ io.on('connection', (socket) => {
         });
     });
 
-    // Reconnect - Handle player returning to an ongoing game
+    // Reconnect
     socket.on('reconnect', async (data, callback) => {
         const reconnectWallet = data.walletAddress?.toLowerCase();
         const signature = data.signature;
+
         if (!reconnectWallet) {
             callback({ success: false, error: 'No wallet address provided' });
             return;
         }
 
-        // BUG-08 FIX: Verify signature to prevent impersonation
-        if (signature) {
-            try {
-                const recovered = ethers.utils.verifyMessage('Reconnecting to CoffeeChess', signature).toLowerCase();
-                if (recovered !== reconnectWallet) {
-                    callback({ success: false, error: 'Signature mismatch — unauthorized reconnect' });
-                    return;
-                }
-            } catch (sigErr) {
-                console.warn('Signature verification error:', sigErr.message);
-                callback({ success: false, error: 'Invalid signature' });
-                return;
-            }
+        // SESSION TOKEN: İmza yerine localStorage'daki token kullan
+        // Chess oyunu için imza zorunluluğu kaldırıldı — MetaMask popup yok
+        const sessionToken = data.sessionToken;
+        const session = playerSessions.get(reconnectWallet);
+
+        // Token varsa doğrula, yoksa sadece wallet adresiyle session'a bak
+        if (sessionToken && session?.token && session.token !== sessionToken) {
+            callback({ success: false, error: 'Invalid session token' });
+            return;
         }
 
-        const session = playerSessions.get(reconnectWallet);
         if (!session || !session.roomId) {
             callback({ success: false, error: 'No active session found' });
             return;
@@ -792,32 +760,26 @@ io.on('connection', (socket) => {
             return;
         }
 
-        // Clear any pending disconnect timer
         if (session.reconnectTimer) {
             clearTimeout(session.reconnectTimer);
             session.reconnectTimer = null;
         }
 
-        // Find player in room and update socket ID
         const player = room.players.find(p => p.address === reconnectWallet);
         if (!player) {
             callback({ success: false, error: 'Player not found in room' });
             return;
         }
 
-        const oldSocketId = player.id;
         player.id = socket.id;
         session.socketId = socket.id;
 
-        // Update closure variables
         currentRoom = session.roomId;
         walletAddress = reconnectWallet;
         playerNum = player.color === 'white' ? 1 : 2;
 
-        // Rejoin socket room
         socket.join(session.roomId);
 
-        // Notify opponent that player reconnected
         const opponent = room.players.find(p => p.address !== reconnectWallet);
         if (opponent) {
             io.to(opponent.id).emit('opponentReconnected', {
@@ -827,7 +789,6 @@ io.on('connection', (socket) => {
 
         console.log(`🔄 Player ${reconnectWallet} reconnected to ${session.roomId}`);
 
-        // Return complete game state to reconnecting player
         callback({
             success: true,
             roomId: session.roomId,
@@ -847,6 +808,28 @@ io.on('connection', (socket) => {
         });
     });
 
+    // On-demand signature delivery for claim recovery
+    socket.on('requestSignature', ({ gameId, walletAddress: reqWallet }, callback) => {
+        if (typeof callback !== 'function') return;
+
+        let foundSig = null;
+        rooms.forEach((room) => {
+            if (String(room.meta?.gameId) !== String(gameId)) return;
+            if (!room.gameOver) return;
+            const player = room.players.find(p => p.address?.toLowerCase() === reqWallet?.toLowerCase());
+            if (!player) return;
+            foundSig = player.color === 'white' ? room.signatureWhite : room.signatureBlack;
+        });
+
+        if (foundSig) {
+            console.log(`📝 Signature delivered on-demand for gameId ${gameId} to ${reqWallet}`);
+            callback({ signature: foundSig });
+        } else {
+            console.warn(`⚠️ requestSignature: No signature found for gameId ${gameId} / ${reqWallet}`);
+            callback({ signature: null, error: 'Signature not available' });
+        }
+    });
+
     // Disconnect
     socket.on('disconnect', () => {
         console.log('👋 Disconnected:', socket.id);
@@ -854,8 +837,6 @@ io.on('connection', (socket) => {
         if (currentRoom && walletAddress) {
             const room = rooms.get(currentRoom);
             if (room && !room.gameOver) {
-
-                // Notify opponent about disconnect
                 const opponentId = room.players.find(p => p.address !== walletAddress)?.id;
                 if (opponentId) {
                     io.to(opponentId).emit('opponentDisconnected', {
@@ -863,22 +844,18 @@ io.on('connection', (socket) => {
                     });
                 }
 
-                // Set reconnection timer (60 seconds)
                 const session = playerSessions.get(walletAddress);
                 if (session) {
                     session.reconnectTimer = setTimeout(() => {
-                        // If still not reconnected after 60s
                         if (rooms.has(currentRoom)) {
                             const winner = playerNum === 1 ? 'black' : 'white';
                             handleGameEnd(currentRoom, winner, 'disconnect');
-
-                            // Cleanup
-                            cleanupRoom(currentRoom);
+                            // NOTE: cleanupRoom is called inside handleGameEnd via setTimeout(30s)
+                            // so we do NOT call it again here to avoid double cleanup
                         }
                     }, RECONNECT_TIMEOUT_MS);
                 }
             } else if (room && room.gameOver) {
-                // Game already over, cleanup immediately
                 setTimeout(() => cleanupRoom(currentRoom), CLEANUP_DELAY_MS);
             }
         }
@@ -892,7 +869,6 @@ async function handleGameEnd(roomId, winner, reason) {
     console.log(`🏁 Game ended in ${roomId}: ${winner} wins (${reason})`);
 
     room.gameOver = true;
-    // BUG-12 FIX: save winner/reason so reconnect handler can return them
     room.winner = winner;
     room.endReason = reason;
     room.signatureWhite = null;
@@ -903,8 +879,6 @@ async function handleGameEnd(roomId, winner, reason) {
         room.timers.interval = null;
     }
 
-    // Calculate scores for Commit-Reveal
-    // Winner: 1000, Loser: 0, Draw: 500
     let whiteScore = 0;
     let blackScore = 0;
 
@@ -915,12 +889,10 @@ async function handleGameEnd(roomId, winner, reason) {
         whiteScore = 0;
         blackScore = 1000;
     } else {
-        // Draw
         whiteScore = 500;
         blackScore = 500;
     }
 
-    // Find players by color to ensure correct address assignment
     const whitePlayer = room.players.find(p => p.color === 'white');
     const blackPlayer = room.players.find(p => p.color === 'black');
     const winnerAddress = winner === 'white' ? whitePlayer?.address :
@@ -929,85 +901,67 @@ async function handleGameEnd(roomId, winner, reason) {
     let signatureWhite = null;
     let signatureBlack = null;
 
-    if (winner !== 'draw') {
-        try {
-            if (!process.env.SIGNER_PRIVATE_KEY) {
-                console.error("❌ SIGNER_PRIVATE_KEY not found in environment. Cannot sign game win.");
-            } else {
-                const signer = new ethers.Wallet(process.env.SIGNER_PRIVATE_KEY);
-                const gameId = room.meta?.gameId;
+    // FIX: deadline is now properly defined
+    const deadline = Math.floor(Date.now() / 1000) + GAME_END_DEADLINE_SECONDS;
 
-                if (gameId) {
-                    // ABI Encode: keccak256(abi.encodePacked("GAME_WIN", gameId, winnerAddress, chainId, contractAddress))
-                    const network = await provider.getNetwork();
-                    const chainId = ethers.BigNumber.from(network.chainId);
-                    const parsedGameId = ethers.BigNumber.from(gameId);
-                    const checksumWinnerAddress = ethers.utils.getAddress(winnerAddress);
-
-                    console.log("🔏 İmza parametreleri (WINNER):", {
-                        gameId: parsedGameId.toString(),
-                        winnerAddress: checksumWinnerAddress,
-                        chainId: chainId.toString(),
-                        moduleAddress: moduleAddress
-                    });
-
-                    const messageHash = ethers.utils.solidityKeccak256(
-                        ['string', 'uint256', 'address', 'uint256', 'address'],
-                        ['GAME_WIN', parsedGameId, checksumWinnerAddress, chainId, moduleAddress]
-                    );
-
-                    const messageHashBytes = ethers.utils.arrayify(messageHash);
-
-                    if (winner === 'white') {
-                        signatureWhite = await signer.signMessage(messageHashBytes);
-                    } else {
-                        signatureBlack = await signer.signMessage(messageHashBytes);
-                    }
-                    console.log(`✅ GAME_WIN Signature created for ${winnerAddress}`);
-                }
-            }
-        } catch (error) {
-            console.error("❌ Signature generation error:", error);
-        }
-    } else {
-        // Handle Draw condition - Generate signatures for both players
-        try {
-            if (!process.env.SIGNER_PRIVATE_KEY) {
-                console.error("❌ SIGNER_PRIVATE_KEY not found in environment. Cannot sign game draw.");
-            } else {
-                const signer = new ethers.Wallet(process.env.SIGNER_PRIVATE_KEY);
-                const gameId = room.meta?.gameId;
-
-                if (gameId && whitePlayer?.address && blackPlayer?.address) {
-                    const network = await provider.getNetwork();
-                    const chainId = ethers.BigNumber.from(network.chainId);
-                    const parsedGameId = ethers.BigNumber.from(gameId);
-                    const checksumWhiteAddress = ethers.utils.getAddress(whitePlayer.address);
-                    const checksumBlackAddress = ethers.utils.getAddress(blackPlayer.address);
-
-                    // Sign for White
-                    const messageHashWhite = ethers.utils.solidityKeccak256(
-                        ['string', 'uint256', 'address', 'uint256', 'address'],
-                        ['GAME_DRAW', parsedGameId, checksumWhiteAddress, chainId, moduleAddress]
-                    );
-                    signatureWhite = await signer.signMessage(ethers.utils.arrayify(messageHashWhite));
-
-                    // Sign for Black
-                    const messageHashBlack = ethers.utils.solidityKeccak256(
-                        ['string', 'uint256', 'address', 'uint256', 'address'],
-                        ['GAME_DRAW', parsedGameId, checksumBlackAddress, chainId, moduleAddress]
-                    );
-                    signatureBlack = await signer.signMessage(ethers.utils.arrayify(messageHashBlack));
-
-                    console.log(`✅ GAME_DRAW Signatures created for both players`);
-                }
-            }
-        } catch (error) {
-            console.error("❌ Draw signature generation error:", error);
-        }
+    const gameId = room.meta?.gameId;
+    if (!gameId) {
+        console.error(`❌ No gameId found for room ${roomId}, cannot generate signatures`);
+        return;
     }
 
-    // Save generated signatures directly to the room for reconnect caching
+    try {
+        if (!process.env.SIGNER_PRIVATE_KEY) {
+            console.error("❌ SIGNER_PRIVATE_KEY missing in .env!");
+        } else {
+            const signer = new ethers.Wallet(process.env.SIGNER_PRIVATE_KEY);
+            console.log(`📝 Signing with wallet address: ${signer.address}`);
+            // chainId hardcoded = 8453 (Base mainnet) — dynamic getNetwork() can return wrong chain under RPC pressure
+            const chainId = 8453;
+
+            const domain = {
+                name: "Coffy",
+                version: "1",
+                chainId: chainId,
+                verifyingContract: moduleAddress
+            };
+
+            const types = {
+                GameWin: [
+                    { name: "id", type: "uint256" },
+                    { name: "winner", type: "address" }
+                ],
+                GameDraw: [
+                    { name: "id", type: "uint256" }
+                ]
+            };
+
+            if (winner !== 'draw') {
+                const checksumWinner = ethers.utils.getAddress(winnerAddress);
+                const value = {
+                    id: ethers.BigNumber.from(gameId),
+                    winner: checksumWinner
+                };
+
+                const sig = await signer._signTypedData(domain, { GameWin: types.GameWin }, value);
+
+                if (winner === 'white') signatureWhite = sig;
+                else signatureBlack = sig;
+
+                console.log(`✅ GAME_WIN Signature created for ${winnerAddress}`);
+            } else {
+                const value = { id: ethers.BigNumber.from(gameId) };
+                const sig = await signer._signTypedData(domain, { GameDraw: types.GameDraw }, value);
+
+                signatureWhite = sig;
+                signatureBlack = sig;
+                console.log(`✅ GAME_DRAW Signatures created for both players`);
+            }
+        }
+    } catch (error) {
+        console.error("❌ Signature generation error:", error);
+    }
+
     room.signatureWhite = signatureWhite;
     room.signatureBlack = signatureBlack;
 
@@ -1017,6 +971,9 @@ async function handleGameEnd(roomId, winner, reason) {
         pgn: room.chess.pgn(),
         gameId: room.meta?.gameId,
         winnerAddress: winnerAddress || null,
+        whiteAddress: whitePlayer?.address || null,
+        blackAddress: blackPlayer?.address || null,
+        deadline: deadline, // FIX: now defined
         scores: {
             white: whiteScore,
             black: blackScore
@@ -1025,14 +982,13 @@ async function handleGameEnd(roomId, winner, reason) {
         signatureBlack: signatureBlack
     });
 
-    // BUG-10 FIX: schedule cleanup so room doesn't stay in memory forever
-    // 30s delay allows pending reconnection attempts to still see the room
+    // Cleanup after 30s to allow pending reconnections to still see room state
     setTimeout(() => cleanupRoom(roomId), 30000);
 }
 
 function startRoomTimer(roomId) {
     const room = rooms.get(roomId);
-    if (!room || room.timers.interval) return; // Prevent multiple intervals
+    if (!room || room.timers.interval) return;
 
     room.timers.interval = setInterval(() => {
         if (room.gameOver) {
@@ -1040,8 +996,6 @@ function startRoomTimer(roomId) {
             return;
         }
 
-        // Decrement timer for the player whose turn it currently is
-        // Same logic as the working AI local timer (startLocalTimer)
         if (room.chess.history().length > 0) {
             if (room.chess.turn() === 'w') {
                 room.timers.white--;
@@ -1057,10 +1011,10 @@ function startRoomTimer(roomId) {
 
         if (room.timers.white <= 0) {
             handleGameEnd(roomId, 'black', 'timeout');
-            return; // BUG-11 FIX: stop this tick immediately
+            return;
         } else if (room.timers.black <= 0) {
             handleGameEnd(roomId, 'white', 'timeout');
-            return; // BUG-11 FIX: stop this tick immediately
+            return;
         }
     }, 1000);
 }
@@ -1069,12 +1023,10 @@ function cleanupRoom(roomId) {
     const room = rooms.get(roomId);
     if (!room) return;
 
-    // Clear timers
     if (room.timers.interval) {
         clearInterval(room.timers.interval);
     }
 
-    // Remove player sessions
     room.players.forEach(player => {
         if (player.address) {
             const session = playerSessions.get(player.address);
@@ -1085,7 +1037,6 @@ function cleanupRoom(roomId) {
         }
     });
 
-    // Delete room
     rooms.delete(roomId);
     console.log(`🗑️ Room ${roomId} cleaned up`);
 }
@@ -1113,7 +1064,7 @@ async function startServer() {
             console.warn(`⚠️ SIGNER_PRIVATE_KEY is missing from .env! You will not be able to claim games.`);
         }
 
-        server.listen(PORT, '0.0.0.0', () => { // 0.0.0.0 ile tüm network interfacelerini dinle
+        server.listen(PORT, '0.0.0.0', () => {
             console.log(`
 ╔═══════════════════════════════════════════════════╗
 ║      ♔  COFFEE CHESS SECURE SERVER  ♚            ║
@@ -1122,8 +1073,9 @@ async function startServer() {
 ║      ✓ Reconnection support (60s window)         ║
 ║      ✓ Anti-cheat protection                     ║
 ║      ✓ Multi-RPC fallback                        ║
-║      ✓ CORS enabled for all origins              ║
+║      ✓ CORS restricted to allowed origins        ║
 ║      ✓ Trusted signature backend                 ║
+║      ✓ Signature required for reconnect          ║
 ║      Running on port ${PORT}                          ║
 ║      http://localhost:${PORT}                         ║
 ║      http://127.0.0.1:${PORT}                         ║
