@@ -2873,7 +2873,7 @@ export const coffytokenAbi = [
 ];
 
 // GameModule contract (Base Network)
-export const moduleAddress = "0x5F23031155615B97C5a479efB0Af5f74Dfc54E27";
+export const moduleAddress = "0xEb00A304DD1aB9A5bC995d4eD9cAFc190bC593Ea";
 export const moduleAbi = [
     {
         "inputs": [
