@@ -2069,69 +2069,7 @@
             });
         }
 
-        async function ensureAllowanceWithPermit(targetModuleAddress, amountWei) {
-            // Permit ile yetki veriliyor — ayrıca approve/allowance kontrolü gerekmez
-            console.log("🔑 Requesting Permit for:", targetModuleAddress);
-            updateLoadingMessage('Please sign the authorization in MetaMask (Signature Only)...');
 
-            try {
-                const nonce = await coffyToken.nonces(userAddress);
-                const deadline = Math.floor(Date.now() / 1000) + 3600; // 1 hour
-                const name = "Coffy Coin"; // Matching contract constructor
-                const chainId = (await provider.getNetwork()).chainId;
-
-                const domain = {
-                    name: name,
-                    version: "1",
-                    chainId: chainId,
-                    verifyingContract: coffytokenAddress
-                };
-
-                const types = {
-                    Permit: [
-                        { name: "owner", type: "address" },
-                        { name: "spender", type: "address" },
-                        { name: "value", type: "uint256" },
-                        { name: "nonce", type: "uint256" },
-                        { name: "deadline", type: "uint256" }
-                    ]
-                };
-
-                const value = amountWei.toString();
-                const message = {
-                    owner: userAddress,
-                    spender: targetModuleAddress,
-                    value: value,
-                    nonce: nonce.toString(),
-                    deadline: deadline
-                };
-
-                const signature = await signer._signTypedData(domain, types, message);
-                const sig = ethers.utils.splitSignature(signature);
-
-                updateLoadingMessage('Broadcasting permission to blockchain...');
-                const tx = await coffyToken.permit(
-                    userAddress,
-                    targetModuleAddress,
-                    value,
-                    deadline,
-                    sig.v,
-                    sig.r,
-                    sig.s
-                );
-                await tx.wait();
-                console.log("✅ Permit confirmed on-chain.");
-                return true;
-            } catch (err) {
-                console.error("❌ Permit failed:", err);
-                if (err.code === 4001) {
-                    showToast('Authorization rejected by user', 'error');
-                } else {
-                    showToast('Authorization failed. Please try again.', 'error');
-                }
-                return false;
-            }
-        }
 
         // ============ BLOCKCHAIN FUNCTIONS ============
         async function ensureReady() {
@@ -2275,7 +2213,6 @@
             closeModal('create-modal');
             showLoadingOverlay(`Creating game...`, [
                 'Checking balance',
-                'Approving COFFY tokens',
                 'Creating game on blockchain',
                 'Setting up game room'
             ]);
@@ -2294,14 +2231,6 @@
                         showToast('Insufficient COFFY balance', 'error');
                         return;
                     }
-                }
-
-                updateLoadingProgress('Approving COFFY tokens');
-                // Use the new Permit-based flow (SADECE IMZA - NO SPENDING LIMIT PROMPT)
-                const allowanceSecured = await ensureAllowanceWithPermit(moduleAddress, stakeWei);
-                if (!allowanceSecured) {
-                    hideLoadingOverlay();
-                    return;
                 }
 
                 // BUG1 FIX: gameType tanımla (form'dan yoksa sabit 'chess')
@@ -2514,15 +2443,6 @@
                         return;
                     }
 
-                    // ── Step 3: Allowance check + Permit (EIP-2612) ──────────
-                    updateLoadingMessage('Checking COFFY authorization...');
-                    const allowanceSecured = await ensureAllowanceWithPermit(moduleAddress, stakeAmount);
-                    if (!allowanceSecured) {
-                        hideLoadingOverlay();
-                        return;
-                    }
-                    showToast('✅ COFFY approved!', 'success');
-
                     // ── Step 4: Join on blockchain ─────────────────────────────────
                     updateLoadingMessage('Joining game on blockchain...');
                     console.log('🎮 Calling joinGame with gameId:', gameId, '(type:', typeof gameId, ')');
@@ -2719,7 +2639,7 @@
         const socketUrls = [
             `http://localhost:3005`,
             `http://localhost:3000`,
-            `https://coffychess.onrender.com`
+            `https://coffychessnew-1.onrender.com`
         ];
 
         // Helper to emit with timeout — waits for socket to connect before emitting
