@@ -922,8 +922,9 @@ async function handleGameEnd(roomId, winner, reason) {
             const domain = {
                 name: "Coffy",
                 version: "1",
-                chainId: chainId,
-                verifyingContract: moduleAddress
+                chainId: 8453,
+                // HARDCODED: Never rely on imported moduleAddress for signing — always use the exact deployed contract address
+                verifyingContract: '0xEb00A304DD1aB9A5bC995d4eD9cAFc190bC593Ea'
             };
 
             const types = {
