@@ -943,7 +943,13 @@ async function handleGameEnd(roomId, winner, reason) {
                     winner: checksumWinner
                 };
 
+                // DEBUG: Log exact signing parameters
+                console.log(`🔍 SIGN DEBUG: gameId=${gameId} winner=${checksumWinner} chainId=8453 contract=${moduleAddress}`);
+
                 const sig = await signer._signTypedData(domain, { GameWin: types.GameWin }, value);
+
+                // DEBUG: Log first 20 chars of sig to verify
+                console.log(`🔍 SIG FIRST20: ${sig.substring(0, 22)}`);
 
                 if (winner === 'white') signatureWhite = sig;
                 else signatureBlack = sig;
